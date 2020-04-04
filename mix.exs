@@ -13,7 +13,8 @@ defmodule EctoQueryString.MixProject do
       source_url: "http://github.com/mrmicahcooper/ecto_query_string",
       deps: deps(),
       package: package(),
-      docs: docs()
+      docs: docs(),
+      aliases: aliases()
     ]
   end
 
@@ -35,11 +36,17 @@ defmodule EctoQueryString.MixProject do
     ]
   end
 
+  defp aliases do
+    [
+      test: ["test --trace"]
+    ]
+  end
+
   defp package do
     [
       maintainers: ["Micah Cooper"],
       licenses: ["Apache 2.0"],
-      links: %{"GitHub" => "https://github.com/mrmicahcooper/ecto_jsonapi"}
+      links: %{"GitHub" => "https://github.com/mrmicahcooper/ecto_query_string"}
     ]
   end
 

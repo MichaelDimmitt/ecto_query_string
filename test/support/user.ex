@@ -8,6 +8,8 @@ defmodule User do
     field(:password, :string, virtual: true)
     field(:password_digest, :string)
     has_many(:bars, Bar)
+    has_many(:foos, Foo)
+    has_many(:foobars, through: [:foos, :bars])
     timestamps()
   end
 end

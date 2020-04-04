@@ -2,6 +2,7 @@ defmodule EctoQueryString do
   import Ecto.Query
 
   alias EctoQueryString.Reflection
+  import Logger, only: [debug: 1]
 
   @moduledoc """
 
@@ -94,11 +95,11 @@ defmodule EctoQueryString do
   "or:bars.title=micah,bob"   => join: bars in assoc(foo, :bars), or_where: bars.title in ^["micah", "bob"
   "!or:bars.title=micah"      => join: bars in assoc(foo, :bars), or_where: bars.title != ^"micah"
   "!or:bars.title=micah,bob"  => join: bars in assoc(foo, :bars), or_where: bars.title not in ^["micah", "bob"
+  "select=email,bars.title"   => join: bars in assoc(foo, :bars), select: [{:bars, [:title]}, :email], preload: [:bars]
   ```
   """
 
-  @spec query(Ecto.Query, binary) :: Ecto.Query
-  @spec query(Ecto.Query, map) :: Ecto.Query
+  @spec query(Ecto.Query, binary() | map() | keyword() | nil) :: Ecto.Query
   @doc """
   Uses a querystring or a map of params to extend an `Ecto.Query`
 
@@ -106,15 +107,22 @@ defmodule EctoQueryString do
   majority of your filtering, ordering, and basic selects.
 
   """
-  def query(query, ""), do: query(query, %{})
-  def query(query, nil), do: query(query, %{})
+  def query(query, ""), do: query(query, [])
+  def query(query, nil), do: query(query, [])
 
-  def query(query, %{} = params) do
-    Enum.reduce(params, query, &dynamic_segment/2)
+  def query(query, params) when is_map(params) do
+    params = params |> Enum.into([])
+    query(query, params)
+  end
+
+  def query(query, params) when is_list(params) do
+    query = Enum.reduce(params, query, &dynamic_segment/2)
+    debug(inspect(query))
+    query
   end
 
   def query(query, querystring) when is_binary(querystring) do
-    params = URI.decode_query(querystring)
+    params = URI.query_decoder(querystring) |> Enum.to_list()
     query(query, params)
   end
 
@@ -143,42 +151,72 @@ defmodule EctoQueryString do
     end
   end
 
-  @doc false
-  def selectable(query, fields_string) do
-    fields = fields_string |> String.split(",", trim: true)
+  def selectable([field], {query, acc}) do
+    case Reflection.source_schema(query) |> Reflection.field(field) do
+      nil ->
+        {query, acc}
 
-    schema_fields =
-      query
-      |> Reflection.source_schema()
-      |> Reflection.schema_fields()
-
-    for field <- fields, field in schema_fields do
-      String.to_atom(field)
+      selection_field ->
+        new_acc = update_in(acc[nil], &[selection_field | List.wrap(&1)])
+        {query, new_acc}
     end
   end
 
-  @doc false
-  def orderable(query, fields_string) do
-    fields =
-      fields_string
-      |> String.split(",", trim: true)
-      |> Enum.map(&order_field/1)
+  def selectable([assoc, field], {query, acc}) do
+    field =
+      Reflection.source_schema(query)
+      |> Reflection.assoc_schema(assoc)
+      |> Reflection.field(field)
 
-    schema_fields =
-      query
-      |> Reflection.source_schema()
-      |> Reflection.schema_fields()
+    case field do
+      nil ->
+        {query, acc}
 
-    for {order, field} <- fields, field in schema_fields do
-      {order, String.to_atom(field)}
+      assoc_selection_field ->
+        field = String.to_atom(assoc)
+        new_acc = update_in(acc[field], &[assoc_selection_field | List.wrap(&1)])
+        {query, new_acc}
     end
   end
+
+  defp select_into({nil, value}, acc), do: acc ++ value
+  defp select_into({key, value}, acc), do: [{key, value} | acc]
 
   defp order_field("-" <> field), do: {:desc, field}
   defp order_field(field), do: {:asc, field}
 
+  defp dynamic_segment({"order", values}, acc) do
+    fields = values |> String.split(",", trim: true) |> Enum.map(&order_field/1)
+    schema_fields = acc |> Reflection.source_schema() |> Reflection.schema_fields()
+
+    order_values =
+      for {order, field} <- fields, field in schema_fields do
+        {order, String.to_atom(field)}
+      end
+
+    from(acc, order_by: ^order_values)
+  end
+
   defp dynamic_segment({"select", value}, acc) do
-    from(acc, select: ^selectable(acc, value))
+    select_segment =
+      value
+      |> String.split(",", trim: true)
+      |> Enum.map(&String.split(&1, ".", trim: true))
+      |> Enum.reduce({acc, []}, &selectable/2)
+      |> elem(1)
+      |> Enum.reduce([], &select_into/2)
+
+    join_fields = for {key, _} <- select_segment, uniq: true, do: key
+
+    acc =
+      Enum.reduce(join_fields, acc, fn assoc_field, query ->
+        from(parent in query,
+          join: child in assoc(parent, ^assoc_field),
+          preload: [{^assoc_field, child}]
+        )
+      end)
+
+    from(acc, select: ^select_segment)
   end
 
   defp dynamic_segment({"fields", value}, acc) do
@@ -281,11 +319,6 @@ defmodule EctoQueryString do
       _ ->
         acc
     end
-  end
-
-  defp dynamic_segment({"order", values}, acc) do
-    order_values = orderable(acc, values)
-    from(acc, order_by: ^order_values)
   end
 
   defp dynamic_segment({"ilike:" <> key, value}, acc) do

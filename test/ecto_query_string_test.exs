@@ -18,11 +18,6 @@ defmodule EctoQueryStringTest do
     assert queryable(query, "bars.name", "one, two") == {:assoc, :bars, :name, ["one", "two"]}
   end
 
-  test ".selectable returns the existing fields in the same order" do
-    query = from(f in Foo)
-    assert selectable(query, "title,foo,bar,description") == ~w[title foo description]a
-  end
-
   test "all", %{query: query} do
     querystring = ""
     string_query = query(query, querystring)
@@ -332,7 +327,9 @@ defmodule EctoQueryStringTest do
     assert_queries_match(string_query, expected_query)
   end
 
-  test "JOINS t2 ON t1.foreign_key = t1.primary_key OR WHERE key NOT IN value", %{query: query} do
+  test "JOINS t2 ON t1.foreign_key = t1.primary_key OR WHERE t2.key NOT IN t2.value", %{
+    query: query
+  } do
     querystring = "!or:bars.name=foo,bar"
     string_query = query(query, querystring)
 
@@ -352,17 +349,41 @@ defmodule EctoQueryStringTest do
     assert_queries_match(string_query, expected_query)
   end
 
+  test "JOINS t2 ON t1.foreign_key = t1.primary_key SELECT t2.value", %{query: query} do
+    querystring = "select=id,username,email,bars.name,bars.content,foos.title,foobars.name"
+
+    string_query = query(query, querystring)
+
+    expected_query =
+      from(user in User,
+        join: bars in assoc(user, :bars),
+        join: foos in assoc(user, :foos),
+        join: foobars in assoc(user, :foobars),
+        select: [
+          {:bars, [:content, :name]},
+          {:foos, [:title]},
+          {:foobars, [:name]},
+          :email,
+          :username,
+          :id
+        ],
+        preload: [foos: foos, bars: bars, foobars: foobars]
+      )
+
+    assert_queries_match(string_query, expected_query)
+  end
+
   test "SELECT values", %{query: query} do
     querystring = "select=username,email"
     string_query = query(query, querystring)
-    expected_query = from(user in User, select: ^[:username, :email])
+    expected_query = from(user in User, select: ^[:email, :username])
     assert_queries_match(string_query, expected_query)
   end
 
   test "SELECT values with 'fields'", %{query: query} do
     querystring = "fields=username,email"
     string_query = query(query, querystring)
-    expected_query = from(user in User, select: ^[:username, :email])
+    expected_query = from(user in User, select: ^[:email, :username])
     assert_queries_match(string_query, expected_query)
   end
 
